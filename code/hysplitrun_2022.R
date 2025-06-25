@@ -1,23 +1,22 @@
 source('code/functions.R')
 
 ## Read Hysplit trajectory data
-rs.all <- read.csv('data/res_simul_all.csv', header = T)
-rs.all.cut1 <- subset(rs.all, Year > 12)
-rs.all.cut2 <- subset(rs.all.cut1, Month < 8 | Day <= 6)
-rm(rs.all, rs.all.cut1)
-rs.all.cut2 <- data.table(rs.all.cut2)
+## This file is the parquet version of rs.all.cut2
+rs.all <- open_dataset('data/res_simul_cut.parquet')
 
-all.dates <- unique(rs.all.cut2[,YMD])
+all.dates <- rs.all |>
+  select(YMD) |>
+  unique() |>
+  collect() |>
+  unlist(use.names = FALSE)
 
 ##### Run ABC SMC #####
 
-ptm.full.start <- proc.time()
-ptm <- proc.time()
+tic()
 results <- sample.n(2500) 
 results$wvec <- 1/nrow(results)
 results$index <- 1
-print(proc.time() - ptm)
-ptm <- proc.time()
+toc()
 results <- subset(results, l2hit > l2.ep & accuracy > acc.ep)
 res.lst <- list(results)
 for (i in 1:5) {
@@ -34,3 +33,16 @@ ptm.full <- ptm.full.end - ptm.full.start
 
 comp.df <- bind_rows(res.lst)
 write.csv(comp.df, 'code/output/new_results_test.csv', row.names = FALSE)
+
+
+cl <- makeCluster(10)
+clusterEvalQ(cl, {
+  source('code/functions.R')
+  rs.all <- open_dataset('data/res_simul_cut.parquet')
+})
+clusterExport(cl, 'all.dates')
+my.samples <- parLapply(cl, 1:10, function(x) {
+  sample.n(1)
+})
+stopCluster(cl)
+

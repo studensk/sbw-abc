@@ -15,6 +15,8 @@ library(ClustGeo)
 library(dplyr)
 library(caret)
 library(data.table)
+library(tictoc)
+library(arrow)
 
 ## Read in and clean observation data; EPSG 6623 is the mapping for measurements in meters in Quebec
 # Allows us to calculate distances in meters
@@ -121,28 +123,40 @@ tkernel.density <- function(theta.obs, theta.samp, ind) {
 post_eps <- function(df.orig,tmin.to,tmax.to,altitude.disp,temp.min.disp) {
   ## Filters out the trajectories that did not start because the T was
   ## outside (tmin.to,tmax.to)
-  ids <- df.orig[AgeTraj==0
-  ][,start.temp:=AIR_TEMP-273.15
-  ][between(start.temp, tmin.to, tmax.to)]$ID2
-  df <- df.orig[ID2 %in% ids] 
+  
   cols <- c('Year','Lat','Lon','YMD','ID2', 'AgeTraj')
-  # This function finds the first occurence (i.e. minimum AgeTraj) when the
-  # conditions are met for an early landing
-  if (dim(df)[1] > 0) {
-    res.prelim <- df[Elev < altitude.disp | 
-                       AIR_TEMP - 273.15 < temp.min.disp | 
-                       AgeTraj == 9, 
-                     lapply(.SD, min), 
-                     by = ID2, .SDcols = 'AgeTraj'
-    ][order(ID2)]
-    #res <- res.prelim[df, on = .(ID2, AgeTraj), ..cols]
-    res <- df[res.prelim, on = .(ID2, AgeTraj), ..cols][AgeTraj > 0]
-    
-  } else {
-    res <- data.frame(Year=integer(),Lat=double(),Lon=double(),YMD=double(),ID2=double())
-  }
-  res$Year <- res$Year + 2000
-  return(as.data.frame(res))
+  
+  df1 <- df.orig |> 
+    mutate(start.temp = AIR_TEMP - 273.15) |> 
+    filter(AgeTraj == 0 &
+             between(start.temp, tmin.to, tmax.to)) |>
+    select(ID2) |>
+    left_join(df.orig) |>
+    select(all_of(c(cols, 'Elev', 'AIR_TEMP'))) |>
+    arrange(ID2, AgeTraj) |>
+    mutate(sub.elev = Elev < altitude.disp,
+           sub.temp  = AIR_TEMP - 273.15 < temp.min.disp) 
+  
+  df2 <- df1 |>
+    group_by(ID2) |>
+    collect() |>
+    summarize(at1 = min(c(which(sub.elev) - 1, 9)),
+              at2 = min(c(which(sub.temp) - 1, 9)),
+              AgeTraj = min(at1, at2)) |>
+    select(ID2, AgeTraj) |>
+    arrow_table(schema = schema(select(df1, c(ID2, AgeTraj))))
+  
+  res <- df1 |>
+    select(all_of(cols)) |>
+    right_join(df2) |>
+    filter(AgeTraj > 0) |>
+    mutate(Year = Year + 2000)
+  
+  # else {
+  #   res <- data.frame(Year=integer(),Lat=double(),Lon=double(),YMD=double(),
+  #                     ID2=double())
+  # }
+  return(res)
 }
 
 ## Function to sample parameters given bounds (output is a list of parameter values)
@@ -181,15 +195,19 @@ post_theta.sample <- function(origin, theta, rasters = rlst) {
   #est.prob <- theta$est.prob
   est.prob <- 1
   
-  s.origin <- origin[PBL == altitude]
+  s.origin <- origin |> filter(PBL == altitude)
   
   endpoints.all <- post_eps(s.origin, temp.min.to, temp.max.to, altitude.disp, temp.min.disp)
-  n.success <- round(nrow(endpoints.all)*est.prob)
-  if (n.success == 0) {
+  # n.success <- round(nrow(endpoints.all)*est.prob)
+  # if (n.success == 0) {
+  #   return(c('accuracy' = 0, 'l2hit' = 0, 'n.ends' = 0))}
+  # year <- unique(endpoints.all$Year)
+  # 
+  # endpoints.samp <- endpoints.all[sample(1:nrow(endpoints.all), n.success),]
+  endpoints.samp <- collect(endpoints.all)
+  if (nrow(endpoints.samp) == 0) {
     return(c('accuracy' = 0, 'l2hit' = 0, 'n.ends' = 0))}
-  year <- unique(endpoints.all$Year)
-  
-  endpoints.samp <- endpoints.all[sample(1:nrow(endpoints.all), n.success),]
+  year <- unique(endpoints.samp$Year)
   ends.all <- as.data.frame(endpoints.samp[,c('Lon', 'Lat')])
   cord.dec <- SpatialPoints(ends.all, proj4string = CRS("+proj=longlat"))
   cord.utm <- as.data.frame(spTransform(cord.dec, CRS('+init=epsg:6623')))
@@ -198,8 +216,10 @@ post_theta.sample <- function(origin, theta, rasters = rlst) {
   
   ends.df <- endpoints.samp %>% st_as_sf(coords = c('x.coord', 'y.coord'))
   
-  end.rast <- rasterize(ends.df, rast, rep(1, nrow(ends.df)), max, na.rm = TRUE)
-  values(end.rast) <- sapply(values(end.rast), function(x) {ifelse(is.na(x), 0, x)})
+  end.rast <- rasterize(ends.df, rast, 
+                        rep(1, nrow(ends.df)), max, na.rm = TRUE)
+  values(end.rast) <- sapply(values(end.rast), function(x) {
+    ifelse(is.na(x), 0, x)})
   
   obs <- rasters[[as.character(year)]]
   tot <- sum(values(obs), na.rm = TRUE)
@@ -214,10 +234,13 @@ post_theta.sample <- function(origin, theta, rasters = rlst) {
   
   htwt <- sum(na.omit(values(obs))[which(df.nao$pred == 1)])
   htwt.p <- htwt/tot
-  return(c('accuracy' = acc, 'l2hit' = htwt.p, 'n.ends' = n.success))
+  #return(c('accuracy' = acc, 'l2hit' = htwt.p, 'n.ends' = n.success))
+  return(c('accuracy' = acc, 'l2hit' = htwt.p, 'n.ends' = nrow(endpoints.samp)))
 }
 
-sample.n <- function(n = NULL, data = NULL, quant1 = 0.25, quant2 = 0.25, rast = rlst) {
+sample.n <- function(n = NULL, data = NULL, 
+                     quant1 = 0.25, quant2 = 0.25, 
+                     rast = rlst) {
   if (!is.null(data)) {
     n <- nrow(data)
     ags <- aggregate(data = data, cbind(l2.ep, acc.ep) ~ year, unique)
@@ -239,7 +262,7 @@ sample.n <- function(n = NULL, data = NULL, quant1 = 0.25, quant2 = 0.25, rast =
         tdf <- tkernel.sample(th.row, index)
         #ps <- append(th.row, list('date' = s.date))
         ps <- append(tdf, list('date' = s.date))
-        dat <- rs.all.cut2[YMD == s.date]
+        dat <- rs.all |> filter(YMD == s.date)
         s.year <- as.character(year(s.date))
         pts <- as.list(post_theta.sample(dat, ps, rasters = rast))
         t.res <- append(ps, pts)
@@ -255,7 +278,8 @@ sample.n <- function(n = NULL, data = NULL, quant1 = 0.25, quant2 = 0.25, rast =
     rep.lst <- lapply(1:n, function(i) {
       s.date <- sample(all.dates, 1)
       ps <- append(theta.df[i,], list('date' = s.date))
-      dat <- rs.all.cut2[YMD == s.date]
+      dat <- rs.all |> filter(YMD == s.date) 
+      print(ps)
       pts <- as.list(post_theta.sample(dat, ps, rasters = rast))
       t.res <- append(ps, pts)
       return(t.res)
