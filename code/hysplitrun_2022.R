@@ -38,11 +38,11 @@ write.csv(comp.df, 'code/output/new_results_test.csv', row.names = FALSE)
 cl <- makeCluster(10)
 clusterEvalQ(cl, {
   source('code/functions.R')
-  rs.all <- open_dataset('data/res_simul_cut.parquet')
 })
 clusterExport(cl, 'all.dates')
 my.samples <- parLapply(cl, 1:10, function(x) {
-  sample.n(1)
+  rs.all <- open_dataset('data/res_simul_cut.parquet')
+  #sample.n(1)
 })
 stopCluster(cl)
 
