@@ -30,7 +30,8 @@ rast.df2 <- all.mat %>%
   st_as_sf() %>%
   st_drop_geometry() %>%
   mutate(geometry = l2$geometry) %>%
-  st_as_sf()
+  st_as_sf(crs = crs(l2)) %>%
+  st_buffer(dist = 5000)
 
 
 ext.ind <- st_bbox(rast.df2)
@@ -123,7 +124,8 @@ post_eps <- function(df.orig,tmin.to,tmax.to,altitude.disp,temp.min.disp) {
   ## outside (tmin.to,tmax.to)
   ids <- df.orig[AgeTraj==0
   ][,start.temp:=AIR_TEMP-273.15
-  ][between(start.temp, tmin.to, tmax.to)]$ID2
+  ][between(start.temp, tmin.to, tmax.to)
+  ][PBL == altitude]$ID2
   df <- df.orig[ID2 %in% ids] 
   cols <- c('Year','Lat','Lon','YMD','ID2', 'AgeTraj')
   # This function finds the first occurence (i.e. minimum AgeTraj) when the
@@ -181,39 +183,71 @@ post_theta.sample <- function(origin, theta, rasters = rlst) {
   #est.prob <- theta$est.prob
   est.prob <- 1
   
-  s.origin <- origin[PBL == altitude]
+  ptm1 <- proc.time()[3]
+  #s.origin <- origin[PBL == altitude]
+  ptm2 <- proc.time()[3]
   
-  endpoints.all <- post_eps(s.origin, temp.min.to, temp.max.to, altitude.disp, temp.min.disp)
+  #endpoints.all <- post_eps(s.origin, temp.min.to, temp.max.to, altitude.disp, temp.min.disp)
+  endpoints.all <- post_eps(origin, temp.min.to, temp.max.to, 
+                            altitude.disp, temp.min.disp)
+  ptm3 <- proc.time()[3]
   n.success <- round(nrow(endpoints.all)*est.prob)
   if (n.success == 0) {
     return(c('accuracy' = 0, 'l2hit' = 0, 'n.ends' = 0))}
   year <- unique(endpoints.all$Year)
+  y.rast <- na.omit(rast.df2[,as.character(year)])
+  values <- y.rast[[as.character(year)]]
   
-  endpoints.samp <- endpoints.all[sample(1:nrow(endpoints.all), n.success),]
-  ends.all <- as.data.frame(endpoints.samp[,c('Lon', 'Lat')])
-  cord.dec <- SpatialPoints(ends.all, proj4string = CRS("+proj=longlat"))
-  cord.utm <- as.data.frame(spTransform(cord.dec, CRS('+init=epsg:6623')))
+  #endpoints.samp <- endpoints.all[sample(1:nrow(endpoints.all), n.success),] 
+  endpoints.df <- endpoints.all %>%
+    st_as_sf(coords = c('Lon', 'Lat'), crs = CRS("+proj=longlat")) %>%
+    st_transform(crs = crs(rast.df2))
+    
+  #   
+  # ends.all <- as.data.frame(endpoints.samp[,c('Lon', 'Lat')])
+  # cord.dec <- SpatialPoints(ends.all, proj4string = CRS("+proj=longlat"))
+  # cord.utm <- as.data.frame(spTransform(cord.dec, CRS('+init=epsg:6623')))
+  # 
+  # endpoints.samp[,c('x.coord', 'y.coord')] <- cord.utm
+  # 
+  # ends.df <- endpoints.samp %>% 
+  #   st_as_sf(coords = c('x.coord', 'y.coord'), crs = crs(rast.df2))
+  ptm4 <- proc.time()[3]
   
-  endpoints.samp[,c('x.coord', 'y.coord')] <- cord.utm
+  # base.rast <- raster(xmn = ext.ind.10k['xmin'], xmx = ext.ind.10k['xmax'],
+  #                ymn = ext.ind.10k['ymin'], ymx = ext.ind.10k['ymax'],
+  #                resolution = c(10000, 10000)) 
+  # 
+  # end.rast <- rasterize(ends.df, base.rast, rep(1, nrow(ends.df)), max, na.rm = TRUE)
+  intersection <- st_intersects(y.rast, ends.df)
+  ints <- sapply(intersection, function(x) {ifelse(length(x) == 0, 0, 1)})
+  ptm5 <- proc.time()[3]
   
-  ends.df <- endpoints.samp %>% st_as_sf(coords = c('x.coord', 'y.coord'))
+  # values(end.rast) <- sapply(values(end.rast), function(x) {ifelse(is.na(x), 0, x)})
+  # 
+  # obs <- rasters[[as.character(year)]]
+  # tot <- sum(values(obs), na.rm = TRUE)
+  # obs.bin <- obs
+  # values(obs.bin) <- sapply(values(obs.bin), function(x) {
+  #   ifelse(x == 0, 0, x/x)
+  # })
+  # df <- data.frame('obs' = values(obs.bin),
+  #                  'pred' = values(end.rast))
+  # df.nao <- na.omit(df)
+  # acc <- length(which(df.nao$obs == df.nao$pred))/nrow(df.nao)
+  # 
+  # htwt <- sum(na.omit(values(obs))[which(df.nao$pred == 1)])
+  # htwt.p <- htwt/tot
   
-  end.rast <- rasterize(ends.df, rast, rep(1, nrow(ends.df)), max, na.rm = TRUE)
-  values(end.rast) <- sapply(values(end.rast), function(x) {ifelse(is.na(x), 0, x)})
+  acc <- length(which(ints > 0))/length(ints)
+  l2hit <- sum(values*ints)/sum(values)
+  n.ends <- nrow(ends.df)
   
-  obs <- rasters[[as.character(year)]]
-  tot <- sum(values(obs), na.rm = TRUE)
-  obs.bin <- obs
-  values(obs.bin) <- sapply(values(obs.bin), function(x) {
-    ifelse(x == 0, 0, x/x)
-  })
-  df <- data.frame('obs' = values(obs.bin),
-                   'pred' = values(end.rast))
-  df.nao <- na.omit(df)
-  acc <- length(which(df.nao$obs == df.nao$pred))/nrow(df.nao)
-  
-  htwt <- sum(na.omit(values(obs))[which(df.nao$pred == 1)])
-  htwt.p <- htwt/tot
+  ptms <- c(ptm1, ptm2, ptm3, ptm4, ptm5)
+  prop <- c(diff(ptms)/(ptm5 - ptm1), ptm5 - ptm1)
+  names(prop) <- c('altitude subset', 'endpoint calculation', 'projection',
+                   'rasterization', 'total time')
+  print(prop)
   return(c('accuracy' = acc, 'l2hit' = htwt.p, 'n.ends' = n.success))
 }
 
