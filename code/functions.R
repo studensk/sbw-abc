@@ -135,7 +135,7 @@ post_eps <- function(df.orig,tmin.to,tmax.to,altitude.disp,temp.min.disp) {
     select(all_of(c(cols, 'Elev', 'AIR_TEMP'))) |>
     arrange(ID2, AgeTraj) |>
     mutate(sub.elev = Elev < altitude.disp,
-           sub.temp  = AIR_TEMP - 273.15 < temp.min.disp) 
+           sub.temp  = AIR_TEMP - 273.15 < temp.min.disp)
   
   df2 <- df1 |>
     group_by(ID2) |>
