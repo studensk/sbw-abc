@@ -9,6 +9,9 @@ rs.all.cut2 <- data.table(rs.all.cut2)
 
 all.dates <- unique(rs.all.cut2[,YMD])
 
+# rs.all.sf <- st_as_sf(rs.all.cut2, coords = c('Lon', 'Lat'), crs = CRS("+proj=longlat")) %>%
+#   st_transform(crs = crs(rast.df2))
+
 ##### Run ABC SMC #####
 
 ptm.full.start <- proc.time()

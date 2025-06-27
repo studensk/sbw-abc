@@ -34,24 +34,24 @@ rast.df2 <- all.mat %>%
   st_buffer(dist = 5000)
 
 
-ext.ind <- st_bbox(rast.df2)
-ext.ind.10k <- sapply(1:length(ext.ind), function(x) {
-  if (substr(names(ext.ind)[x], 2, 4) == 'min') {
-    floor(ext.ind[x]/10000)*10000
-  }
-  else {ceiling(ext.ind[x]/10000)*10000}
-})
-rast <- raster(xmn = ext.ind.10k['xmin'], xmx = ext.ind.10k['xmax'],
-               ymn = ext.ind.10k['ymin'], ymx = ext.ind.10k['ymax'],
-               resolution = c(10000, 10000)) 
-
-rlst <- lapply(2013:2018, function(x) {
-  colnm <- paste0('X', x)
-  rasterize(rast.df2, rast, field = colnm, fun = 'sum')
-})
-
-names(rlst) <- 2013:2018
-rstack <- stack(rlst)
+# ext.ind <- st_bbox(rast.df2)
+# ext.ind.10k <- sapply(1:length(ext.ind), function(x) {
+#   if (substr(names(ext.ind)[x], 2, 4) == 'min') {
+#     floor(ext.ind[x]/10000)*10000
+#   }
+#   else {ceiling(ext.ind[x]/10000)*10000}
+# })
+# rast <- raster(xmn = ext.ind.10k['xmin'], xmx = ext.ind.10k['xmax'],
+#                ymn = ext.ind.10k['ymin'], ymx = ext.ind.10k['ymax'],
+#                resolution = c(10000, 10000)) 
+# 
+# rlst <- lapply(2013:2018, function(x) {
+#   colnm <- paste0('X', x)
+#   rasterize(rast.df2, rast, field = colnm, fun = 'sum')
+# })
+# 
+# names(rlst) <- 2013:2018
+# rstack <- stack(rlst)
 
 ## Read in start point rasters
 obs <- raster::stack("data/sbw_defol_stack.grd")
@@ -119,13 +119,14 @@ tkernel.density <- function(theta.obs, theta.samp, ind) {
 }
 
 ##### Model functions #####
-post_eps <- function(df.orig,tmin.to,tmax.to,altitude.disp,temp.min.disp) {
+post_eps <- function(df.orig,tmin.to, tmax.to,
+                     altitude.disp,temp.min.disp) {
   ## Filters out the trajectories that did not start because the T was
   ## outside (tmin.to,tmax.to)
   ids <- df.orig[AgeTraj==0
   ][,start.temp:=AIR_TEMP-273.15
   ][between(start.temp, tmin.to, tmax.to)
-  ][PBL == altitude]$ID2
+  ]$ID2
   df <- df.orig[ID2 %in% ids] 
   cols <- c('Year','Lat','Lon','YMD','ID2', 'AgeTraj')
   # This function finds the first occurence (i.e. minimum AgeTraj) when the
@@ -174,7 +175,8 @@ parsamp.density <- function(parsamp) {
   return(lst)
 }
 
-post_theta.sample <- function(origin, theta, rasters = rlst) {
+#post_theta.sample <- function(origin, theta, rasters = rlst) {
+post_theta.sample <- function(origin, theta) {
   altitude <- theta$altitude
   temp.min.to <- theta$temp.min.to
   temp.max.to <- theta$temp.max.to
@@ -184,19 +186,20 @@ post_theta.sample <- function(origin, theta, rasters = rlst) {
   est.prob <- 1
   
   ptm1 <- proc.time()[3]
-  #s.origin <- origin[PBL == altitude]
+  s.origin <- origin[PBL == altitude]
   ptm2 <- proc.time()[3]
   
-  #endpoints.all <- post_eps(s.origin, temp.min.to, temp.max.to, altitude.disp, temp.min.disp)
-  endpoints.all <- post_eps(origin, temp.min.to, temp.max.to, 
-                            altitude.disp, temp.min.disp)
+  endpoints.all <- post_eps(s.origin, temp.min.to, temp.max.to, altitude.disp, temp.min.disp)
+  # endpoints.all <- post_eps(origin, temp.min.to, temp.max.to, 
+  #                           altitude.disp, temp.min.disp)
   ptm3 <- proc.time()[3]
-  n.success <- round(nrow(endpoints.all)*est.prob)
-  if (n.success == 0) {
-    return(c('accuracy' = 0, 'l2hit' = 0, 'n.ends' = 0))}
-  year <- unique(endpoints.all$Year)
+  # n.success <- round(nrow(endpoints.all)*est.prob)
+  # if (n.success == 0) {
+  #   return(c('accuracy' = 0, 'l2hit' = 0, 'n.ends' = 0))}
+  year <- year(theta$date)
   y.rast <- na.omit(rast.df2[,as.character(year)])
   values <- y.rast[[as.character(year)]]
+  values.bin <- values/pmax(values, 0.001)
   
   #endpoints.samp <- endpoints.all[sample(1:nrow(endpoints.all), n.success),] 
   endpoints.df <- endpoints.all %>%
@@ -219,7 +222,7 @@ post_theta.sample <- function(origin, theta, rasters = rlst) {
   #                resolution = c(10000, 10000)) 
   # 
   # end.rast <- rasterize(ends.df, base.rast, rep(1, nrow(ends.df)), max, na.rm = TRUE)
-  intersection <- st_intersects(y.rast, ends.df)
+  intersection <- st_intersects(y.rast, endpoints.df)
   ints <- sapply(intersection, function(x) {ifelse(length(x) == 0, 0, 1)})
   ptm5 <- proc.time()[3]
   
@@ -239,19 +242,22 @@ post_theta.sample <- function(origin, theta, rasters = rlst) {
   # htwt <- sum(na.omit(values(obs))[which(df.nao$pred == 1)])
   # htwt.p <- htwt/tot
   
-  acc <- length(which(ints > 0))/length(ints)
+  #acc <- length(which(ints > 0))/length(ints)
+  acc <- length(which(values.bin == ints))/length(values.bin)
   l2hit <- sum(values*ints)/sum(values)
-  n.ends <- nrow(ends.df)
+  n.ends <- nrow(endpoints.df)
   
   ptms <- c(ptm1, ptm2, ptm3, ptm4, ptm5)
   prop <- c(diff(ptms)/(ptm5 - ptm1), ptm5 - ptm1)
   names(prop) <- c('altitude subset', 'endpoint calculation', 'projection',
                    'rasterization', 'total time')
   print(prop)
-  return(c('accuracy' = acc, 'l2hit' = htwt.p, 'n.ends' = n.success))
+  #return(c('accuracy' = acc, 'l2hit' = htwt.p, 'n.ends' = n.success))
+  return(c('accuracy' = acc, 'l2hit' = l2hit, 'n.ends' = n.ends))
 }
 
-sample.n <- function(n = NULL, data = NULL, quant1 = 0.25, quant2 = 0.25, rast = rlst) {
+#sample.n <- function(n = NULL, data = NULL, quant1 = 0.25, quant2 = 0.25, rast = rlst) {
+sample.n <- function(n = NULL, data = NULL, quant1 = 0.25, quant2 = 0.25) {
   if (!is.null(data)) {
     n <- nrow(data)
     ags <- aggregate(data = data, cbind(l2.ep, acc.ep) ~ year, unique)
@@ -290,7 +296,8 @@ sample.n <- function(n = NULL, data = NULL, quant1 = 0.25, quant2 = 0.25, rast =
       s.date <- sample(all.dates, 1)
       ps <- append(theta.df[i,], list('date' = s.date))
       dat <- rs.all.cut2[YMD == s.date]
-      pts <- as.list(post_theta.sample(dat, ps, rasters = rast))
+      #pts <- as.list(post_theta.sample(dat, ps, rasters = rast))
+      pts <- as.list(post_theta.sample(dat, ps))
       t.res <- append(ps, pts)
       return(t.res)
     })
