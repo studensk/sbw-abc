@@ -66,7 +66,12 @@ observed from one year to the next. The L2 counts are stored in a shapefile with
 counts for each year (X20[..] columns), and indicators of a likely event 
 (Imm20[..] columns). Multiplying these columns gives NA for no observation, 
 0 for no observed event, and a real number indicating L2 count for an 
-observation of a likely immigration event.
+observation of a likely immigration event. These L2 observation sites are saved
+as sf point objects, and 5km buffers are drawn around each site. In this model, 
+a "dataset" is a set of these buffers with either an L2 count in each location
+(in the case of the observed data), or a binary 0/1 indicating whether there was
+an increase in L2 numbers due to suspected migration activity (in the case of 
+the simulated data).
 
 ```{r L2 Counts, warning = FALSE, message = FALSE}
 ggplot(data = l2.counts) +
@@ -86,15 +91,14 @@ NOAA's atmospheric dispersal model, HYSPLIT
 plot(defoliation)
 ```
 
-Due to the computational cost of 
-running HYSPLIT, a large dataset of trajectories was generated prior to the 
-model fitting process. Trajectories (max 9hrs in duration) were generated from 
-every newly defoliated pixel for 4 hours every night from June 15th 
-to August 6th of each year (9pm, 11pm, 1am, 3am). HYSPLIT requires starting
-altitude as an input parameter, so the trajectories were generated at 5 discrete
-altitudes: 0.4, 0.6, 0.8, 1, and 1.2x the height of the boundary layer. Each 
-iteration of the ABC SMC algorithm subsets trajectories from this 13GB data 
-table, "rs.all.cut2".
+Due to the computational cost of running HYSPLIT, a large dataset of 
+trajectories was calculated prior to the model fitting process. Trajectories
+(max 9hrs in duration) were generated from every newly defoliated pixel for 4 
+hours every night from June 15th to August 6th of each year (9pm, 11pm,
+1am, 3am). HYSPLIT requires a starting altitude as an input parameter, so the 
+trajectories were generated at 5 discrete altitudes: 0.4, 0.6, 0.8, 1, and 1.2x 
+the height of the boundary layer. Each iteration of the ABC SMC algorithm 
+subsets trajectories from this dataset.
 
 ```{r trajectories}
 head(rs.all.cut2, 20)
@@ -103,7 +107,7 @@ head(rs.all.cut2, 20)
 To generate a year's instance of L2 data, a date is selected at random from the
 possible dates in rs.all.cut2 and a parameter vector $\theta$ is sampled from
 the prior. The sampled parameters include: minimum and maximum temperatures for 
-takeoff, minimum windspeed for takeoff, maximum precipitation during takeoff, 
+takeoff, maximum precipitation during takeoff, 
 minimum dispersal altitude and minimum temperature for dispersal.
 
 The dataset rs.all.cut2 is then filtered based on the sampled date, 
@@ -111,7 +115,7 @@ takeoff altitude and takeoff temperature. A trajectory is only kept if: it
 originates on the sampled date, it has the correct takeoff altitude, and all 
 takeoff conditions are within the boundaries specified by the parameters in 
 $\theta$. The endpoints of the trajectories are filtered based on the landing 
-parameters for dispesal altitude and minimum temperature. As soon as the 
+parameters for dispersal altitude and minimum temperature. As soon as the 
 dispersal altitude is reached or the minimum temperature for dispersal is 
 achieved, the moths are assumed to have landed and the trajectory is cut off
 at the corresponding hour; the corresponding cell in the L2 raster is marked 

@@ -2,13 +2,14 @@ source('code/functions.R')
 
 ## Read Hysplit trajectory data
 ## This file is the parquet version of rs.all.cut2
-rs.all <- open_dataset('data/res_simul_cut.parquet')
+rs.all <- open_dataset('data/archive/res_simul_cut.parquet')
 
 all.dates <- rs.all |>
   select(YMD) |>
   unique() |>
   collect() |>
   unlist(use.names = FALSE)
+rm(rs.all)
 
 ##### Run ABC SMC #####
 
@@ -32,17 +33,4 @@ ptm.full.end <- proc.time()
 ptm.full <- ptm.full.end - ptm.full.start
 
 comp.df <- bind_rows(res.lst)
-write.csv(comp.df, 'code/output/new_results_test.csv', row.names = FALSE)
-
-
-cl <- makeCluster(10)
-clusterEvalQ(cl, {
-  source('code/functions.R')
-})
-clusterExport(cl, 'all.dates')
-my.samples <- parLapply(cl, 1:10, function(x) {
-  rs.all <- open_dataset('data/res_simul_cut.parquet')
-  #sample.n(1)
-})
-stopCluster(cl)
-
+write.csv(comp.df, 'code/output/new2_results_test.csv', row.names = FALSE)

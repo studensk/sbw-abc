@@ -11,9 +11,9 @@ library(parallel)
 library(raster)
 #library(rgdal)
 library(sf)
-library(ClustGeo)
+#library(ClustGeo)
 library(dplyr)
-library(caret)
+#library(caret)
 library(data.table)
 library(tictoc)
 library(arrow)
@@ -21,38 +21,20 @@ library(arrow)
 ## Read in and clean observation data; EPSG 6623 is the mapping for measurements in meters in Quebec
 # Allows us to calculate distances in meters
 l2 <- read_sf('data/L2.dbf') %>%
-  st_transform(crs = CRS('+init=epsg:6623'))
+  st_transform(crs = '+init=epsg:6623')
 
 #x.mat <- l2[,grep('X201', names(l2))]
 x.mat <- l2[,grep('^201', names(l2))]
 x.mat <- x.mat[,2:ncol(x.mat)] 
 imm.mat <- l2[,grep('Imm_201', names(l2))]
 all.mat <-  x.mat*imm.mat
-rast.df2 <- all.mat %>%
+rast.df <- all.mat %>%
   st_as_sf() %>%
   st_drop_geometry() %>%
   mutate(geometry = l2$geometry) %>%
-  st_as_sf()
+  st_as_sf(crs = st_crs(l2)) #%>%
+  # st_buffer(dist = 5000)
 
-
-ext.ind <- st_bbox(rast.df2)
-ext.ind.10k <- sapply(1:length(ext.ind), function(x) {
-  if (substr(names(ext.ind)[x], 2, 4) == 'min') {
-    floor(ext.ind[x]/10000)*10000
-  }
-  else {ceiling(ext.ind[x]/10000)*10000}
-})
-rast <- raster(xmn = ext.ind.10k['xmin'], xmx = ext.ind.10k['xmax'],
-               ymn = ext.ind.10k['ymin'], ymx = ext.ind.10k['ymax'],
-               resolution = c(10000, 10000)) 
-
-rlst <- lapply(2013:2018, function(x) {
-  colnm <- paste0('X', x)
-  rasterize(rast.df2, rast, field = colnm, fun = 'sum')
-})
-
-names(rlst) <- 2013:2018
-rstack <- stack(rlst)
 
 ## Read in start point rasters
 obs <- raster::stack("data/sbw_defol_stack.grd")
@@ -62,7 +44,8 @@ years <- 2007:2017
 pbls <- c(0.4, 0.6, 0.8, 1, 1.2)
 lower <- c(0.4, 13, 27, 0, 13)
 upper <- c(1.2, 17, 31, 100, 17)
-param.names <- c('altitude', 'temp.min.to', 'temp.max.to', 'altitude.disp', 'temp.min.disp')
+param.names <- c('altitude', 'temp.min.to', 'temp.max.to', 
+                 'altitude.disp', 'temp.min.disp')
 
 
 
@@ -102,20 +85,31 @@ tkernel.sample <- function(theta, indx) {
   return(theta)
 }
 
+# tkernel.density <- function(theta.obs, theta.samp, ind) {
+#   density <- theta.samp[params]
+#   density$altitude <- dnorm(theta.samp$altitude,
+#                             theta.obs$altitude, 0.2/ind)
+#   density$temp.min.to <- dnorm(theta.samp$temp.min.to, 
+#                                theta.obs$temp.min.to, 1/ind)
+#   density$temp.max.to <- dnorm(theta.samp$temp.max.to, 
+#                                theta.obs$temp.max.to, 1/ind)
+#   density$altitude.disp <- dnorm(theta.samp$altitude.disp, 
+#                                  theta.obs$altitude.disp, 16/ind)
+#   density$temp.min.disp <- dnorm(theta.samp$temp.min.disp, 
+#                                  theta.obs$temp.min.disp, 1/ind)
+#   density$est.prob <- dnorm(theta.samp$est.prob, 
+#                             theta.obs$est.prob, 0.1/ind)
+#   return(density)
+# }
+
 tkernel.density <- function(theta.obs, theta.samp, ind) {
-  density <- theta.samp[params]
-  density$altitude <- dnorm(theta.samp$altitude,
-                            theta.obs$altitude, 0.2/ind)
-  density$temp.min.to <- dnorm(theta.samp$temp.min.to, 
-                               theta.obs$temp.min.to, 1/ind)
-  density$temp.max.to <- dnorm(theta.samp$temp.max.to, 
-                               theta.obs$temp.max.to, 1/ind)
-  density$altitude.disp <- dnorm(theta.samp$altitude.disp, 
-                                 theta.obs$altitude.disp, 16/ind)
-  density$temp.min.disp <- dnorm(theta.samp$temp.min.disp, 
-                                 theta.obs$temp.min.disp, 1/ind)
-  density$est.prob <- dnorm(theta.samp$est.prob, 
-                            theta.obs$est.prob, 0.1/ind)
+  sd.vec <- c('altitude' = 0.2,
+              'temp.min.to' = 1,
+              'temp.max.to' = 1,
+              'altitude.disp' = 16,
+              'temp.min.disp' = 1,
+              'est.prob' = 1)
+  density <- dnorm(theta.obs, theta.samp, sd.vec/ind)
   return(density)
 }
 
@@ -186,61 +180,39 @@ parsamp.density <- function(parsamp) {
   return(lst)
 }
 
-post_theta.sample <- function(origin, theta, rasters = rlst) {
+post_theta.sample <- function(origin, theta, rast.df2) {
   altitude <- theta$altitude
   temp.min.to <- theta$temp.min.to
   temp.max.to <- theta$temp.max.to
   altitude.disp <- theta$altitude.disp
   temp.min.disp <- theta$temp.min.disp
-  #est.prob <- theta$est.prob
-  est.prob <- 1
+  endpoints.all <- post_eps(origin, temp.min.to, temp.max.to,
+                            altitude.disp, temp.min.disp)
   
-  s.origin <- origin |> filter(PBL == altitude)
+  year <- year(theta$date)
+  # y.rast <- na.omit(rast.df2[,as.character(year)])
+  # values <- y.rast[[as.character(year)]]
+  values <- rast.df2[[as.character(year)]]
+  values.bin <- values/pmax(values, 0.001)
   
-  endpoints.all <- post_eps(s.origin, temp.min.to, temp.max.to, altitude.disp, temp.min.disp)
-  # n.success <- round(nrow(endpoints.all)*est.prob)
-  # if (n.success == 0) {
-  #   return(c('accuracy' = 0, 'l2hit' = 0, 'n.ends' = 0))}
-  # year <- unique(endpoints.all$Year)
-  # 
-  # endpoints.samp <- endpoints.all[sample(1:nrow(endpoints.all), n.success),]
-  endpoints.samp <- collect(endpoints.all)
-  if (nrow(endpoints.samp) == 0) {
-    return(c('accuracy' = 0, 'l2hit' = 0, 'n.ends' = 0))}
-  year <- unique(endpoints.samp$Year)
-  ends.all <- as.data.frame(endpoints.samp[,c('Lon', 'Lat')])
-  cord.dec <- SpatialPoints(ends.all, proj4string = CRS("+proj=longlat"))
-  cord.utm <- as.data.frame(spTransform(cord.dec, CRS('+init=epsg:6623')))
+  endpoints.df <- endpoints.all |>
+    collect() |>
+    st_as_sf(coords = c('Lon', 'Lat'), crs = "+proj=longlat") |>
+    st_transform(crs = st_crs(rast.df2))
   
-  endpoints.samp[,c('x.coord', 'y.coord')] <- cord.utm
+  intersection <- st_intersects(rast.df2, endpoints.df)
+  ints <- sapply(intersection, function(x) {ifelse(length(x) == 0, 0, 1)})
   
-  ends.df <- endpoints.samp %>% st_as_sf(coords = c('x.coord', 'y.coord'))
+  acc <- length(which(values.bin == ints))/length(values.bin)
+  l2hit <- sum(values*ints)/sum(values)
+  n.ends <- nrow(endpoints.df)
   
-  end.rast <- rasterize(ends.df, rast, 
-                        rep(1, nrow(ends.df)), max, na.rm = TRUE)
-  values(end.rast) <- sapply(values(end.rast), function(x) {
-    ifelse(is.na(x), 0, x)})
-  
-  obs <- rasters[[as.character(year)]]
-  tot <- sum(values(obs), na.rm = TRUE)
-  obs.bin <- obs
-  values(obs.bin) <- sapply(values(obs.bin), function(x) {
-    ifelse(x == 0, 0, x/x)
-  })
-  df <- data.frame('obs' = values(obs.bin),
-                   'pred' = values(end.rast))
-  df.nao <- na.omit(df)
-  acc <- length(which(df.nao$obs == df.nao$pred))/nrow(df.nao)
-  
-  htwt <- sum(na.omit(values(obs))[which(df.nao$pred == 1)])
-  htwt.p <- htwt/tot
-  #return(c('accuracy' = acc, 'l2hit' = htwt.p, 'n.ends' = n.success))
-  return(c('accuracy' = acc, 'l2hit' = htwt.p, 'n.ends' = nrow(endpoints.samp)))
+  return(c('accuracy' = acc, 'l2hit' = l2hit, 'n.ends' = n.ends))
 }
 
 sample.n <- function(n = NULL, data = NULL, 
                      quant1 = 0.25, quant2 = 0.25, 
-                     rast = rlst) {
+                     clusters = 50) {
   if (!is.null(data)) {
     n <- nrow(data)
     ags <- aggregate(data = data, cbind(l2.ep, acc.ep) ~ year, unique)
@@ -251,20 +223,47 @@ sample.n <- function(n = NULL, data = NULL,
     acc.ep <- ags$acc.ep
     names(acc.ep) <- as.character(ags$year)
     
-    rep.lst <- lapply(1:n, function(i) {
+    cl <- makeCluster(clusters)
+    clusterEvalQ(cl, {
+      library(sf)
+      library(tidyverse)
+      library(arrow)
+    })
+    clusterExport(cl, c('all.dates', 'post_theta.sample', 
+                        'post_eps', 'rast.df', 'sample.discrete',
+                        'tkernel.sample', 'data', 
+                        'l2.ep', 'acc.ep', 'n', 'params'),
+                  envir = environment())
+    rep.lst <- parLapply(cl, 1:n, function(i) {
+      
       c.l2 <- 0
       c.acc <- 0
       y <- as.character(data$year[i])
       while(c.l2 < l2.ep[[y]] | c.acc < acc.ep[[y]]) {
-        s.date <- sample(all.dates, 1)
-        #th.row <- results[sample.discrete(1, results$wvec),params]
+        date.orig <- data$date[i]
+        #s.date <- sample(all.dates, 1)
+        m <- 8
+        d <- 6
+        while (m == 8 & d == 6) {
+          #s.date <- sample(all.dates, 1)
+          off <- round(rnorm(1, 0, 1))
+          s.date <- as.Date(date.orig) + off
+          #ymd <- as.Date(s.date)
+          m <- month(s.date)
+          d <- day(s.date)
+        }
         th.row <- data[sample.discrete(1, data$wvec),params]
         tdf <- tkernel.sample(th.row, index)
-        #ps <- append(th.row, list('date' = s.date))
         ps <- append(tdf, list('date' = s.date))
-        dat <- rs.all |> filter(YMD == s.date)
-        s.year <- as.character(year(s.date))
-        pts <- as.list(post_theta.sample(dat, ps, rasters = rast))
+        dat <- open_dataset('data/archive/res_simul_cut.parquet') |>
+          filter(YMD == s.date & PBL == ps$altitude)
+        rast2 <- rast.df |>
+          dplyr::select(all_of(y)) |>
+          na.omit() |>
+          st_buffer(dist = 5000)
+        #dat <- rs.all |> filter(YMD == s.date)
+        #s.year <- as.character(year(s.date))
+        pts <- as.list(post_theta.sample(dat, ps, rast.df2 = rast2))
         t.res <- append(ps, pts)
         c.l2 <- t.res$l2hit
         c.acc <- t.res$accuracy
@@ -272,18 +271,46 @@ sample.n <- function(n = NULL, data = NULL,
       }
       return(t.res)
     })
+    stopCluster(cl)
   }
   else {
-    theta.df <- bind_cols(post_parsamp(n))
-    rep.lst <- lapply(1:n, function(i) {
-      s.date <- sample(all.dates, 1)
-      ps <- append(theta.df[i,], list('date' = s.date))
-      dat <- rs.all |> filter(YMD == s.date) 
-      print(ps)
-      pts <- as.list(post_theta.sample(dat, ps, rasters = rast))
+    # theta.df <- bind_cols(post_parsamp(n))
+    # s.dates <- sample(all.dates, n)
+    cl <- makeCluster(clusters)
+    clusterEvalQ(cl, {
+      library(sf)
+      library(tidyverse)
+      library(arrow)
+    })
+    clusterExport(cl, c('post_parsamp', 'all.dates', 'post_theta.sample', 
+                        'post_eps', 'rast.df'))
+    rep.lst <- parLapply(cl, 1:n, function(x) {
+      m <- 8
+      d <- 6
+      while (m == 8 & d == 6) {
+        s.date <- sample(all.dates, 1)
+        ymd <- as.Date(s.date)
+        m <- month(ymd)
+        d <- day(ymd)
+      }
+      theta.df <- bind_cols(post_parsamp(1)) %>%
+        mutate('date' = s.date)
+      #write.csv(theta.df, paste0('code/output/theta/', x, '.csv'))
+      theta.df <- select(theta.df, -date)
+      yr <- year(s.date)
+      rast2 <- rast.df |>
+        dplyr::select(all_of(as.character(yr))) |>
+        na.omit() |>
+        st_buffer(dist = 5000)
+      ps <- append(theta.df, list('date' = s.date))
+      dat <- open_dataset('data/archive/res_simul_cut.parquet') |>
+        filter(YMD == s.date & PBL == ps$altitude)
+      pts <- as.list(post_theta.sample(dat, ps, rast.df2 = rast2))
       t.res <- append(ps, pts)
+      #write.csv(as.data.frame(t.res), paste0('code/output/results/', x, '.csv'))
       return(t.res)
     })
+    stopCluster(cl)
   }
   results <- bind_rows(rep.lst)
   results$year <- year(results$date)
@@ -303,22 +330,59 @@ sample.n <- function(n = NULL, data = NULL,
   return(res.strat)
 }
 
-post_next.sample <- function(results, q1 = 0.25, q2 = 0.25, index, rst = rlst) {
-  nt.df <- sample.n(data = results, quant1 = q1, quant2 = q2, rast = rst)
-  nt.df$wvec <- sapply(1:nrow(nt.df), function(i) {
-    tsamp <- nt.df[i,]
-    denom.vec <- sapply(1:nrow(nt.df), function(j) {
-      tobs <- nt.df[j,]
-      kd.lst <- tkernel.density(tobs, tsamp, index)
-      kd <- prod(unlist(kd.lst))
-      w <- results$wvec[j]
-      return(w*kd)
-    })
-    denom <- sum(denom.vec)
+sd.vec <- c('altitude' = 0.2,
+            'temp.min.to' = 1,
+            'temp.max.to' = 1,
+            'altitude.disp' = 16,
+            'temp.min.disp' = 1,
+            'est.prob' = 1)
+
+post_next.sample <- function(results, q1 = 0.25, q2 = 0.25, index) {
+  nt.df <- sample.n(data = results, quant1 = q1, quant2 = q2)
+  # nt.df$wvec <- sapply(1:nrow(nt.df), function(i) {
+  #   tsamp <- nt.df[i,]
+  #   denom.vec <- sapply(1:nrow(nt.df), function(j) {
+  #     tobs <- nt.df[j,]
+  #     kd.lst <- tkernel.density(tobs, tsamp, index)
+  #     kd <- prod(unlist(kd.lst))
+  #     w <- results$wvec[j]
+  #     return(w*kd)
+  #   })
+  #   denom <- sum(denom.vec)
+  #   prior.lst <- parsamp.density(tsamp)
+  #   prior <- prod(unlist(prior.lst))
+  #   wnew <- prior/denom
+  #   return(wnew)
+  # }) 
+  ind.vec <- 1:nrow(nt.df)
+  eg.nt.df <- expand.grid('ind.obs' = ind.vec, 'ind.samp' = ind.vec)
+  
+  prior.prod <- sapply(ind.vec, function(ind) {
+    tsamp <- nt.df[ind,]
     prior.lst <- parsamp.density(tsamp)
     prior <- prod(unlist(prior.lst))
-    wnew <- prior/denom
-    return(wnew)
-  }) 
-  return(nt.df)
+    return(prior)
+  })
+  
+  combo.df <- expand.grid('prior' = prior.prod, 
+                          'wv' = results$wvec) %>%
+    cbind(eg.nt.df)
+  s <- sapply(params, function(p) {
+    vec.orig <- nt.df[,p]
+    eg <- expand.grid(vec.orig, vec.orig)
+    k <- dnorm(eg[,2], eg[,1], sd.vec[p]/index)
+    return(k)
+  })
+  mult.df <- combo.df |>
+    mutate(k = apply(s, 1, prod),
+           denom.vec = wv*k) |>
+    group_by(ind.obs, prior) |>
+    summarize(denom.val = sum(denom.vec)) |>
+    mutate(wvec = prior/denom.val) |>
+    ungroup() |>
+    select(wvec)
+  nt.df.new <- cbind(nt.df, mult.df)
+  return(nt.df.new)
 }
+
+
