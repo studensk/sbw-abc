@@ -279,19 +279,13 @@ kds2d <- function(obs, pred, h = 50000) {
   nobs <- length(obs$x)
   npred <- length(pred$x)
   
-  #h <- with(obs, c(bandwidth.nrd(x), bandwidth.nrd(y))/4)
-  
   ax <- outer(obs$x, pred$x, "-")/h
   ay <- outer(obs$y, pred$y, "-")/h
   
-  k <- dnorm(ax)*dnorm(ay)
-  az <- apply(k, 2, sum)/(nobs*h^2)
+  n <- length(ax)
+  k <- exp(-(ax^2+ay^2)/2)/(2*pi)
+  az <- colSums(k)/(nobs*h^2)
   
-  # az <- c()
-  # for (i in 1:npred) {
-  #   z <- sum(dnorm(ax[,i])*dnorm(ay[,i]))/(nobs*h^2)
-  #   az <- c(az, z)
-  # } 
   result <- pred
   result$z <- (az/sum(az))*npred
   return(result)
