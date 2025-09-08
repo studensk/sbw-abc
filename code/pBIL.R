@@ -216,9 +216,15 @@ post_eps_ws <- function(df.orig, theta) {
   return(res)
 }
 
-mcmc.iter <- function(theta, traj.data = rs.all) {
+mcmc.iter <- function(theta, traj.data = rs.all, 
+                      gibbs.date = NULL, new = TRUE, ...) {
   ns.rows <- 1
-  theta <- proposal(theta)
+  if (new) {
+    theta <- proposal(theta, ...)
+  }
+  
+  if (!is.null(gibbs.date)) {theta$s.date <- gibbs.date}
+  
   s.date.orig <- theta$s.date
   year <- year(s.date.orig)
   s.date <- s.date.orig
@@ -273,11 +279,16 @@ mcmc.iter <- function(theta, traj.data = rs.all) {
 }
 
 ## obs and pred are both lists (or dfs) with elements x and y
-kds2d <- function(obs, pred, h = 50000) {
+#kds2d <- function(obs, pred, h = 50000) {
+kds2d <- function(obs, pred, h = NULL) {
   names(obs) <- tolower(names(obs))
   names(pred) <- tolower(names(pred))
   nobs <- length(obs$x)
   npred <- length(pred$x)
+  
+  if (is.null(h)) {
+    h <- with(obs, c(bandwidth.nrd(x), bandwidth.nrd(y))/4)
+  }
   
   ax <- outer(obs$x, pred$x, "-")/h
   ay <- outer(obs$y, pred$y, "-")/h

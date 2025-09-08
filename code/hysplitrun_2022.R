@@ -1,16 +1,5 @@
 source('code/functions.R')
 
-## Read Hysplit trajectory data
-## This file is the parquet version of rs.all.cut2
-rs.all <- open_dataset('data/archive/res_simul_cut.parquet')
-
-all.dates <- rs.all |>
-  select(YMD) |>
-  unique() |>
-  collect() |>
-  unlist(use.names = FALSE)
-rm(rs.all)
-
 ##### Run ABC SMC #####
 
 tic()
@@ -19,18 +8,18 @@ results$wvec <- 1/nrow(results)
 results$index <- 1
 toc()
 results <- subset(results, l2hit > l2.ep & accuracy > acc.ep)
+write.csv(results, 'code/output/results1.csv', row.names = FALSE)
 res.lst <- list(results)
 for (i in 1:5) {
-  print(proc.time() - ptm)
-  ptm <- proc.time()
+  tic()
   res <- res.lst[[i]]
   results <- post_next.sample(res, index = i, q1 = 0.25, q2 = 0.25)
-  results$index <- i + 1
+  new.ind <- i + 1
+  results$index <- new.ind
+  write.csv(results, paste0('code/output/results', new.ind, '.csv'), row.names = FALSE)
   res.lst <- append(res.lst, list(results))
+  toc()
 }
-
-ptm.full.end <- proc.time()
-ptm.full <- ptm.full.end - ptm.full.start
 
 comp.df <- bind_rows(res.lst)
 write.csv(comp.df, 'code/output/new2_results_test.csv', row.names = FALSE)

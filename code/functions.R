@@ -12,16 +12,34 @@ library(raster)
 #library(rgdal)
 library(sf)
 #library(ClustGeo)
-library(dplyr)
+library(tidyverse)
 #library(caret)
 library(data.table)
 library(tictoc)
 library(arrow)
 
+
+## Read Hysplit trajectory data
+## This file is the parquet version of rs.all.cut2
+rs.all <- open_dataset('data/archive/res_simul_cut.parquet')
+
+all.dates <- rs.all |>
+  select(YMD) |>
+  unique() |>
+  collect() |>
+  unlist(use.names = FALSE)
+#rm(rs.all)
+
 ## Read in and clean observation data; EPSG 6623 is the mapping for measurements in meters in Quebec
 # Allows us to calculate distances in meters
-l2 <- read_sf('data/L2.dbf') %>%
-  st_transform(crs = '+init=epsg:6623')
+l2.orig <- read_sf('data/L2.dbf') 
+
+ll.crs <- st_crs(l2.orig)
+dec.crs <- '+init=epsg:6623'
+
+l2 <- l2.orig |>
+  st_transform(crs = dec.crs)
+
 
 #x.mat <- l2[,grep('X201', names(l2))]
 x.mat <- l2[,grep('^201', names(l2))]
@@ -36,8 +54,18 @@ rast.df <- all.mat %>%
   # st_buffer(dist = 5000)
 
 
+
+
 ## Read in start point rasters
-obs <- raster::stack("data/sbw_defol_stack.grd")
+obs <- raster::stack("data/sbw_defol_stack.grd") |>
+  rasterToPoints()
+obs.sf <- st_as_sf(as.data.frame(obs), 
+                   coords = c('x', 'y'), crs = dec.crs) |>
+  st_transform(crs = crs(rast.df))
+obs.sf.pl <- obs.sf[,7:ncol(obs.sf)] |>
+  pivot_longer(contains('sbw'), 
+               names_to = 'year', values_to = 'defoliation') |>
+  mutate(year = substr(year, 4, 7))
 
 ## Define years, boundary layer levels and initial parameter boundaries
 years <- 2007:2017
@@ -203,11 +231,17 @@ post_theta.sample <- function(origin, theta, rast.df2) {
   intersection <- st_intersects(rast.df2, endpoints.df)
   ints <- sapply(intersection, function(x) {ifelse(length(x) == 0, 0, 1)})
   
+  intersection2 <- st_intersects(endpoints.df, rast.df2)
+  ints2 <- sapply(intersection2, function(x) {ifelse(length(x) == 0, 0, 1)})
+  ints2.inds <- endpoints.df$ID2[ints2 == 1]
+  id.orig <- paste0(ints2.inds, collapse = 'q')
+  
   acc <- length(which(values.bin == ints))/length(values.bin)
   l2hit <- sum(values*ints)/sum(values)
   n.ends <- nrow(endpoints.df)
   
-  return(c('accuracy' = acc, 'l2hit' = l2hit, 'n.ends' = n.ends))
+  return(list('accuracy' = acc, 'l2hit' = l2hit,
+           'n.ends' = n.ends, 'id.orig' = id.orig))
 }
 
 sample.n <- function(n = NULL, data = NULL, 
@@ -305,7 +339,7 @@ sample.n <- function(n = NULL, data = NULL,
       ps <- append(theta.df, list('date' = s.date))
       dat <- open_dataset('data/archive/res_simul_cut.parquet') |>
         filter(YMD == s.date & PBL == ps$altitude)
-      pts <- as.list(post_theta.sample(dat, ps, rast.df2 = rast2))
+      pts <- post_theta.sample(dat, ps, rast.df2 = rast2)
       t.res <- append(ps, pts)
       #write.csv(as.data.frame(t.res), paste0('code/output/results/', x, '.csv'))
       return(t.res)
